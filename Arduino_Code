@@ -1,0 +1,239 @@
+#include <ESP8266WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include "DHT.h"
+#include <ESPAsyncTCP.h>
+
+
+// Replace with your network credentials
+const char* ssid = "NETGEAR76";
+const char* password = "elegantplanet085";
+
+// defines pins for the sonar sensor HC-sr04
+const int trigPin = 0;
+const int echoPin = 12;
+// defines variables
+long duration;
+int distance;
+
+// current distance and motion, this will be updated in loop function
+float D = 0.0;
+float A = 0.0;
+
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
+
+unsigned long previousMillis = 0; //store last time Sonar was updated
+const long interval = 100; // Updates Sonar readings every .1 seconds
+
+//////////////////////////////////////////////////////////////////////
+//web page
+/////////////////////////////////////////////////////////////////////
+
+const char index_html[] PROGMEM = R"webpage(
+<!DOCTYPE HTML><html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://code.highcharts.com/8.0/highcharts.js"></script>
+<style>
+body {
+  min-width: 300px;
+  max-width: 800px;
+  height: 400px;
+  margin: 0 auto;
+}
+h2 {
+  font-family: Arial;
+  font-size: 2.5rem;
+  text-align: center;
+}
+</style>
+</head>
+<body>
+<h2>ESP8266 Baby Monitor Prototype</h2>
+<div id="distance-chart" class="container"></div>
+<div id="motion-chart" class="container"></div>
+</body>
+<script>
+
+//Chart Window for Distance Plotter
+
+var chartT = new Highcharts.Chart({
+chart:{ renderTo : 'distance-chart' },
+  boost: {
+        useGPUTranslations: true
+  },
+title: { text: 'Distance from Sonar' },
+series: [{
+  showInLegend: false,
+  data: [],
+  lineWidth: 0,
+  marker:{
+    enabled: true,
+    radius:2
+}
+}],
+plotOptions: {
+  line: { animation: false,
+    dataLabels: { enabled: false }
+  },
+  series: { color: '#059e8a' }
+  },
+  xAxis: { type: 'datetime',
+  dateTimeLabelFormats: { second: '%H:%M:%S' }
+  },
+  yAxis: {
+    title: { text: 'Distance (cm)' }
+  },
+  credits: { enabled: false }
+});
+
+setInterval(function ( ) {
+  var xhttp = new XMLHttpRequest();
+  xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+      var x = (new Date()).getTime(),
+      y = parseFloat(this.responseText);
+      if(chartT.series[0].data.length > 100) {
+        chartT.series[0].addPoint([x, y], true, true, true);
+      } else {
+        chartT.series[0].addPoint([x, y], true, false, true);
+      }
+    }
+  };
+xhttp.open("GET", "/distance", true);
+xhttp.send();
+}, 100 ) ;
+
+//Chart Window for Motion Plotter
+
+var chartF = new Highcharts.Chart({
+  chart:{ renderTo:'motion-chart' },
+    boost: {
+      useGPUTranslations: true
+    },
+    title: { text: 'Motion in Rads' },
+    series: [{
+      showInLegend: false,
+      data: [],
+      lineWidth: 0,
+      marker:{
+        enabled: true,
+        radius:2
+      }
+    }],
+    plotOptions: {
+      line: { animation: false,
+      dataLabels: { enabled: false }
+    }
+  },
+  xAxis: {
+    type: 'datetime',
+    dateTimeLabelFormats: { second: '%H:%M:%S' }
+  },
+  yAxis: {
+    title: { text: 'motion (Degrees)' }
+  },
+  credits: { enabled: false }
+});
+
+setInterval(function ( ) {
+  var xhttp = new XMLHttpRequest();
+  xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+      var x = (new Date()).getTime(),
+      y = parseFloat(this.responseText);
+      //console.log(this.responseText);
+        if(chartF.series[0].data.length > 100) {
+        chartF.series[0].addPoint([x, y], true, true, true);
+      } else {
+        chartF.series[0].addPoint([x, y], true, false, true);
+      }
+    }
+  };
+xhttp.open("GET", "/motion", true);
+xhttp.send();
+}, 100 ) ;
+
+</script>
+</html>)webpage";
+
+//////////////////////////////////////////////
+//End Web Page
+//////////////////////////////////////////////
+
+
+void setup(){
+  pinMode(trigPin, OUTPUT); // Sets the trigPin as an Output
+  pinMode(echoPin, INPUT); // Sets the echoPin as an Input
+  
+  // Serial port for debugging purposes
+  Serial.begin(115200);
+
+
+  // Connect to Wi-Fi
+  WiFi.begin(ssid, password);
+  Serial.println("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println(".");
+  }
+
+  // Print ESP32 Local IP Address
+  Serial.println(WiFi.localIP());
+
+  // Route for root / web page
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", index_html);
+  });
+  server.on("/distance", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/plain", String(D).c_str());
+  });
+  server.on("/motion", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/plain", String(A).c_str());
+  });
+
+  // Start server
+  server.begin();
+}
+
+void loop(){ 
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval) {
+    // save the last time you updated the Sonar values
+    previousMillis = currentMillis;
+
+
+    // Read Sonar
+    float currentDistance = distance;
+    // Clears the trigPin
+    digitalWrite(trigPin, LOW);
+    delayMicroseconds(2);
+    // Sets the trigPin on HIGH state for 10 micro seconds
+    digitalWrite(trigPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin, LOW);
+    // Reads the echoPin, returns the sound wave travel time in microseconds
+    duration = pulseIn(echoPin, HIGH);
+    // Calculating the distance
+    distance = duration * 0.034 / 2;
+    // if Sonar read failed, we don't want to change D value
+    if (isnan(currentDistance)) {
+      Serial.println("Failed to read from Sonar!");
+      Serial.println(currentDistance);
+    } else {
+      D = currentDistance;
+      Serial.println(D);
+    }
+
+
+    // Read Antennae 
+    float currentAntennae = analogRead(A0);
+    // if Antennae read failed, we don't want to change A value 
+    if (isnan(currentAntennae)) {
+      Serial.println("Failed to read from Antennae!");
+    }  else {
+      A = currentAntennae;
+      Serial.println(A);
+    }
+  }
+}
